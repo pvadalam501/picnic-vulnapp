@@ -1,32 +1,86 @@
-on: [ push, workflow_dispatch ]
+# on: [ push, workflow_dispatch ]
 
-env:
-  IMAGE_NAME: ${{ github.repository }}:${{ github.sha }}
+# env:
+#   IMAGE_NAME: ${{ github.repository }}:${{ github.sha }}
 
-jobs:
-  build-and-scan:
-    name: Build and scan image
-    runs-on: ubuntu-latest
+# jobs:
+#   build-and-scan:
+#     name: Build and scan image
+#     runs-on: ubuntu-latest
 
-    steps:
-      - name: Check out the repository
-        uses: actions/checkout@v2
+#     steps:
+#       - name: Check out the repository
+#         uses: actions/checkout@v2
 
-      - name: Build the image
-        run: docker build -t $IMAGE_NAME .
+#       - name: Build the image
+#         run: docker build -t $IMAGE_NAME .
 
-      - name: Prisma Cloud image scan
-        id: scan
-        uses: PaloAltoNetworks/prisma-cloud-scan@v1
-        with:
-          pcc_console_url: ${{ secrets.PCC_CONSOLE_URL }}
-          pcc_user: ${{ secrets.PCC_USER }}
-          pcc_pass: ${{ secrets.PCC_PASS }}
-          image_name: ${{ env.IMAGE_NAME }}
+#       - name: Prisma Cloud image scan
+#         id: scan
+#         uses: PaloAltoNetworks/prisma-cloud-scan@v1
+#         with:
+#           pcc_console_url: ${{ secrets.PCC_CONSOLE_URL }}
+#           pcc_user: ${{ secrets.PCC_USER }}
+#           pcc_pass: ${{ secrets.PCC_PASS }}
+#           image_name: ${{ env.IMAGE_NAME }}
 
-      # (Optional) for compatibility with GitHub's code scanning alerts
-      - name: Upload SARIF file
-        if: ${{ always() }} # necessary if using failure thresholds in the image scan
-        uses: github/codeql-action/upload-sarif@v1
-        with:
-          sarif_file: ${{ steps.scan.outputs.sarif_file }}
+#       # (Optional) for compatibility with GitHub's code scanning alerts
+#       - name: Upload SARIF file
+#         if: ${{ always() }} # necessary if using failure thresholds in the image scan
+#         uses: github/codeql-action/upload-sarif@v1
+#         with:
+#           sarif_file: ${{ steps.scan.outputs.sarif_file }}
+
+stages:
+  - build
+  - deploy
+
+variables:
+  GAR_LOCATION: "us-central1"               # Update to your Artifact Registry region
+  GAR_REPOSITORY: "picnic-repo"            # Update to your GAR repository name
+  IMAGE_NAME: "picnic-vulnapp"
+  IMAGE_TAG: "$GAR_LOCATION-docker.pkg.dev/$GCP_PROJECT_ID/$GAR_REPOSITORY/$IMAGE_NAME:$CI_COMMIT_SHA"
+
+# --- STAGE 1: Build & Push Docker Image ---
+build_image:
+  stage: build
+  image: docker:24.0.5
+  services:
+    - docker:24.0.5-dind
+  before_script:
+    - apk add --no-cache python3 curl bash
+    # Install Google Cloud SDK
+    - curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=/opt
+    - export PATH=$PATH:/opt/google-cloud-sdk/bin
+    # Authenticate to GCP using Service Account Key
+    - echo "$GCP_SA_KEY" | gcloud auth activate-service-account --key-file=-
+    - gcloud auth configure-docker ${GAR_LOCATION}-docker.pkg.dev --quiet
+  script:
+    - docker build -t $IMAGE_TAG .
+    - docker push $IMAGE_TAG
+  only:
+    - main
+
+# --- STAGE 2: Deploy to GKE ---
+deploy_to_gke:
+  stage: deploy
+  image: google/cloud-sdk:latest
+  before_script:
+    # Install gke-gcloud-auth-plugin and kubectl
+    - gcloud components install gke-gcloud-auth-plugin kubectl --quiet
+    # Authenticate to GCP
+    - echo "$GCP_SA_KEY" | gcloud auth activate-service-account --key-file=-
+    - gcloud config set project $GCP_PROJECT_ID
+    # Fetch GKE Cluster Credentials
+    - gcloud container clusters get-credentials $GKE_CLUSTER_NAME --zone $GKE_ZONE --project $GCP_PROJECT_ID
+  script:
+    # Replace placeholder with actual Docker Image URI built in previous stage
+    - sed -i "s|IMAGE_PLACEHOLDER|$IMAGE_TAG|g" k8s/deployment.yaml
+    # Apply Kubernetes manifests
+    - kubectl apply -f k8s/deployment.yaml
+    - kubectl apply -f k8s/service.yaml
+    # Verify deployment rollout
+    - kubectl rollout status deployment/picnic-vulnapp --timeout=120s
+    - kubectl get svc picnic-vulnapp-service
+  only:
+    - main
