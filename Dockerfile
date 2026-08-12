@@ -1,4 +1,4 @@
-FROM openjdk:8-jdk as BUILDAPP
+FROM eclipse-temurin:8-jdk as BUILDAPP
 
 RUN mkdir /workspace
 WORKDIR /workspace
