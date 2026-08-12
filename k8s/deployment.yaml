@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: picnic-vulnapp
+  labels:
+    app: picnic-vulnapp
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: picnic-vulnapp
+  template:
+    metadata:
+      labels:
+        app: picnic-vulnapp
+    spec:
+      containers:
+      - name: picnic-vulnapp
+        # GitLab CI will replace IMAGE_PLACEHOLDER dynamically
+        image: IMAGE_PLACEHOLDER
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "250m"
